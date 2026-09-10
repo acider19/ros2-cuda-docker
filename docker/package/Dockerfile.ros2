@@ -1,0 +1,81 @@
+ARG BASE_IMAGE=ghcr.io/acider19/ros-cuda-base:x86_64-ros2-latest
+
+FROM ${BASE_IMAGE}
+
+SHELL ["/bin/bash", "-c"]
+
+ARG PACKAGE_REPO=https://github.com/v4rl-ucy/FAST-LIVO2-ROS2.git
+ARG PACKAGE_BRANCH=main
+ARG PACKAGE_NAME=fast_livo
+ARG CUDA_ARCH="70;75;80;86"
+ARG ROS_DISTRO=humble
+ARG TARGETPLATFORM
+ARG TARGETARCH
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ROS_DISTRO=${ROS_DISTRO}
+ENV CUDA_ARCHITECTURES=${CUDA_ARCH}
+
+LABEL org.opencontainers.image.title=ros-pkg
+LABEL org.opencontainers.image.description="ROS2 package on ${TARGETPLATFORM}/${TARGETARCH}, CUDA arch ${CUDA_ARCH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl-dev \
+    libfmt-dev \
+    libspdlog-dev \
+    ros-${ROS_DISTRO}-pcl-conversions \
+    ros-${ROS_DISTRO}-pcl-ros \
+    ros-${ROS_DISTRO}-tf2-eigen \
+    ros-${ROS_DISTRO}-cv-bridge \
+    ros-${ROS_DISTRO}-image-transport \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -sfnT /usr/include/eigen3/Eigen /usr/include/Eigen
+
+RUN pip3 install gtsam \
+    || apt-get install -y --no-install-recommends python3-gtsam
+
+WORKDIR /colcon_ws/src
+
+RUN git clone --depth 1 https://github.com/strasdat/Sophus.git -b 1.22.10 \
+    && cd Sophus \
+    && mkdir build && cd build \
+    && cmake .. -DSOPHUS_USE_BASIC_LOGGING=ON \
+    && make -j$(nproc) \
+    && make install \
+    && cd /colcon_ws/src \
+    && rm -rf Sophus
+
+RUN git clone --depth 1 https://github.com/Rhymer-Lcy/rpg_vikit_ros2_fisheye.git \
+    && cp -r rpg_vikit_ros2_fisheye/vikit_common . \
+    && cp -r rpg_vikit_ros2_fisheye/vikit_ros . \
+    && rm -rf rpg_vikit_ros2_fisheye
+
+RUN git clone --depth 1 https://github.com/Livox-SDK/Livox-SDK2.git /tmp/Livox-SDK2 \
+    && cd /tmp/Livox-SDK2 \
+    && mkdir -p build && cd build \
+    && cmake .. \
+    && make -j$(nproc) \
+    && make install \
+    && rm -rf /tmp/Livox-SDK2
+
+RUN git clone --depth 1 https://github.com/Livox-SDK/livox_ros_driver2.git \
+    && cd livox_ros_driver2 \
+    && cp package_ROS2.xml package.xml \
+    && cd /colcon_ws/src \
+    && git clone --depth 1 -b ${PACKAGE_BRANCH} ${PACKAGE_REPO} ${PACKAGE_NAME}
+
+WORKDIR /colcon_ws
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && colcon build --packages-select vikit_common vikit_ros livox_ros_driver2 \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release -DROS_EDITION=ROS2 -DDISTRO_ROS=${ROS_DISTRO}
+
+RUN source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && source /colcon_ws/install/setup.bash \
+    && colcon build --packages-select ${PACKAGE_NAME} \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    -DCUDA_ARCHITECTURES="${CUDA_ARCH}"
+
+RUN echo "source /colcon_ws/install/setup.bash" >> /etc/bash.bashrc
+
+WORKDIR /workspace

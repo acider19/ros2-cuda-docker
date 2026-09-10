@@ -1,0 +1,322 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  BASE_PREFIX: ${{ github.repository_owner }}/ros-cuda-base
+  PKG_PREFIX: ${{ github.repository_owner }}/ros-pkg
+  NGC_API_TOKEN: ${{ secrets.NGC_API_TOKEN }}
+  NGC_USERNAME: ${{ secrets.NGC_USERNAME }}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      ngc: ${{ steps.check.outputs.ngc }}
+    steps:
+      - id: check
+        env:
+          TOKEN: ${{ secrets.NGC_API_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "ngc=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ngc=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  base-x86-ros2:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.BASE_PREFIX }}
+          tags: |
+            type=raw,value=x86_64-ros2-latest
+            type=sha,prefix=x86_64-ros2-
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/base/Dockerfile.ros2
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            BASE_IMAGE=nvidia/cuda:12.6.3-devel-ubuntu22.04
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=base-x86_64-ros2
+          cache-to: type=gha,mode=max,scope=base-x86_64-ros2
+
+  base-jetson-agx:
+    needs: gate
+    if: needs.gate.outputs.ngc == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Login to NVIDIA NGC
+        uses: docker/login-action@v3
+        with:
+          registry: nvcr.io
+          username: ${{ env.NGC_USERNAME || '$oauthtoken' }}
+          password: ${{ env.NGC_API_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.BASE_PREFIX }}
+          tags: |
+            type=raw,value=jetson-agx-ros2-latest
+            type=sha,prefix=jetson-agx-ros2-
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/base/Dockerfile.ros2
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            BASE_IMAGE=nvcr.io/nvidia/l4t-jetpack:r36.4.0
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=base-jetson-agx-ros2
+          cache-to: type=gha,mode=max,scope=base-jetson-agx-ros2
+
+  base-jetson-nano:
+    needs: gate
+    if: needs.gate.outputs.ngc == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Login to NVIDIA NGC
+        uses: docker/login-action@v3
+        with:
+          registry: nvcr.io
+          username: ${{ env.NGC_USERNAME || '$oauthtoken' }}
+          password: ${{ env.NGC_API_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.BASE_PREFIX }}
+          tags: |
+            type=raw,value=jetson-nano-ros2-latest
+            type=sha,prefix=jetson-nano-ros2-
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/base/Dockerfile.ros2
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            BASE_IMAGE=nvcr.io/nvidia/l4t-jetpack:r36.4.0
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=base-jetson-nano-ros2
+          cache-to: type=gha,mode=max,scope=base-jetson-nano-ros2
+
+  pkg-fast-livo-x86:
+    needs: base-x86-ros2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.PKG_PREFIX }}
+          tags: |
+            type=raw,value=fast_livo-x86_64-ros2-latest
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/package/Dockerfile.ros2
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.BASE_PREFIX }}:x86_64-ros2-latest
+            PACKAGE_REPO=https://github.com/v4rl-ucy/FAST-LIVO2-ROS2.git
+            PACKAGE_BRANCH=main
+            PACKAGE_NAME=fast_livo
+            CUDA_ARCH=70;75;80;86
+            ROS_DISTRO=humble
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=pkg-fast_livo-x86_64-ros2
+          cache-to: type=gha,mode=max,scope=pkg-fast_livo-x86_64-ros2
+      - name: Verify image
+        run: |
+          sleep 10
+          IMAGE="${{ env.REGISTRY }}/${{ env.PKG_PREFIX }}:fast_livo-x86_64-ros2-latest"
+          docker manifest inspect "${IMAGE}" > /dev/null
+
+  pkg-fast-livo-agx:
+    needs: base-jetson-agx
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.PKG_PREFIX }}
+          tags: |
+            type=raw,value=fast_livo-jetson-agx-ros2-latest
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/package/Dockerfile.ros2
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.BASE_PREFIX }}:jetson-agx-ros2-latest
+            PACKAGE_REPO=https://github.com/v4rl-ucy/FAST-LIVO2-ROS2.git
+            PACKAGE_BRANCH=main
+            PACKAGE_NAME=fast_livo
+            CUDA_ARCH=87
+            ROS_DISTRO=humble
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=pkg-fast_livo-jetson-agx-ros2
+          cache-to: type=gha,mode=max,scope=pkg-fast_livo-jetson-agx-ros2
+
+  pkg-fast-livo-nano:
+    needs: base-jetson-nano
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.PKG_PREFIX }}
+          tags: |
+            type=raw,value=fast_livo-jetson-nano-ros2-latest
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/package/Dockerfile.ros2
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.BASE_PREFIX }}:jetson-nano-ros2-latest
+            PACKAGE_REPO=https://github.com/v4rl-ucy/FAST-LIVO2-ROS2.git
+            PACKAGE_BRANCH=main
+            PACKAGE_NAME=fast_livo
+            CUDA_ARCH=87
+            ROS_DISTRO=humble
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=pkg-fast_livo-jetson-nano-ros2
+          cache-to: type=gha,mode=max,scope=pkg-fast_livo-jetson-nano-ros2
+
+  smoke-fast-livo-x86:
+    needs: pkg-fast-livo-x86
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Smoke test (x86_64)
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.PKG_PREFIX }}:fast_livo-x86_64-ros2-latest
+        run: |
+          docker run --rm --entrypoint bash "${IMAGE}" -c '
+            set -e
+            echo "arch: $(dpkg --print-architecture)"
+            test "$(dpkg --print-architecture)" = "amd64"
+            test -x /colcon_ws/install/fast_livo/lib/fast_livo/fastlivo_mapping
+            test -x /colcon_ws/install/livox_ros_driver2/lib/livox_ros_driver2/livox_ros_driver2_node
+            python3 -c "import gtsam"
+          '
+
+  smoke-fast-livo-agx:
+    needs: pkg-fast-livo-agx
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: Smoke test (jetson-agx)
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.PKG_PREFIX }}:fast_livo-jetson-agx-ros2-latest
+        run: |
+          docker run --rm --platform linux/arm64 --entrypoint bash "${IMAGE}" -c '
+            set -e
+            echo "arch: $(dpkg --print-architecture)"
+            test "$(dpkg --print-architecture)" = "arm64"
+            test -x /colcon_ws/install/fast_livo/lib/fast_livo/fastlivo_mapping
+            test -x /colcon_ws/install/livox_ros_driver2/lib/livox_ros_driver2/livox_ros_driver2_node
+            python3 -c "import gtsam"
+          '
+
+  smoke-fast-livo-nano:
+    needs: pkg-fast-livo-nano
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: Smoke test (jetson-nano)
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.PKG_PREFIX }}:fast_livo-jetson-nano-ros2-latest
+        run: |
+          docker run --rm --platform linux/arm64 --entrypoint bash "${IMAGE}" -c '
+            set -e
+            echo "arch: $(dpkg --print-architecture)"
+            test "$(dpkg --print-architecture)" = "arm64"
+            test -x /colcon_ws/install/fast_livo/lib/fast_livo/fastlivo_mapping
+            test -x /colcon_ws/install/livox_ros_driver2/lib/livox_ros_driver2/livox_ros_driver2_node
+            python3 -c "import gtsam"
+          '
